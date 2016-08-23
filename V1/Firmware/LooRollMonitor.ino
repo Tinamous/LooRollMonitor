@@ -126,7 +126,7 @@ void setup() {
     Particle.function("setMinRolls", setMinRolls);
     Particle.function("getCount", getCount);
     Particle.function("calibrate", calibrate);
-    Particle.publish("status", "Loo Roll Monitor V0.3.3");
+    Particle.publish("status", "Loo Roll Monitor V0.3.6");
     RGB.color(0, 255, 0);
     
     // Load in the ADC thresholds for the sensors and bits.
@@ -141,6 +141,11 @@ void setup() {
     
     // Allow time to send status.
     delay(2000);
+    
+    // Now attach the water sense interrupt.
+    // only interested in falling edge to indicate water present
+    // allow natural polling to clear it
+    attachInterrupt(waterSensePin, waterSenseIsr, FALLING);
 }
 
 void loop() {
@@ -159,9 +164,10 @@ void loop() {
     }
     
         // If more than 0 then set RGB LED to green
-    if (looRollCount > minimumRollCount) {
+    if (looRollCount > minimumRollCount && !waterSensedPublished) {
         RGB.color(0, 255, 0);
     } else {
+        // If loo roll count low, or water sensed then show red.
         RGB.color(255, 0, 0);
     }
     
@@ -176,7 +182,7 @@ void sleep() {
     
     // If more than n minutes since the last reset
     // then go into Low power mode
-    if (t > (240 * 1000)) {
+    if (t > (60 * 1000)) {
         publishAdcValues = false;
         //Particle.publish("status", "Going to sleep...");
         // Indivate low power mode with a bright LED!
@@ -186,10 +192,13 @@ void sleep() {
         
         // Sleep WiFi (but still runs user code so
         // still runs high current (40mA))
-        System.sleep(5);
-        delay(5000);
+        System.sleep(30);
+        delay(30000);
         
-        publishAdcValues = false;
+        Particle.publish("status","Awake!");
+        delay(2000);
+        
+        //publishAdcValues = false;
         
         // Deep sleep.
         // Wakup on WKP pin.
@@ -200,8 +209,16 @@ void sleep() {
         //System.sleep(waterSensePin, FALLING, 60);
         
     } else {
-        // Otherwise check every 5 seconds and don't go into low power
-        delay(10000);
+        // Otherwise check every 10 seconds and don't go into low power
+        // Handy for debug or initial power up + firmware updates
+        for (int i=0; i<10; i++) {
+            delay(1000);
+            // If water sensed then exit out of the delay
+            // and allow the loop to process the status.
+            if (waterSenseTriggered) {
+                return;
+            }
+        }
         publishAdcValues = true;
     }
 }
@@ -280,14 +297,28 @@ bool hasLooRoll(int sensorId) {
 // Water leak detection
 //////////////////////////////////////////////////////////////////////////////
 void checkWaterSense() {
-    int waterSensed = digitalRead(waterSensePin);
+    // Pin reads low if water is present.
+    int waterSensed = !digitalRead(waterSensePin);
     
     // trigger once only.
-    if (!waterSensedPublished && waterSensed) {
+    if (waterSensed && !waterSensedPublished) {
         Particle.publish("status", "WATER LEAK DETECTED!");
         Particle.publish("senml", "{e:[{'n':'WaterAdc','v':'" + String(waterSensed) + "'} ]}", 60, PRIVATE);
         waterSensedPublished = true;
     }
+    
+    // If we have published water sense detected but it is not now.
+    // then clear the warning
+    if (!waterSensed && waterSensedPublished) {
+        Particle.publish("status", "Water leak cleared.");
+        Particle.publish("senml", "{e:[{'n':'WaterAdc','v':'" + String(waterSensed) + "'} ]}", 60, PRIVATE);
+        waterSensedPublished = false;
+    }
+    
+    // Don't do any action on waterSenseTriggered
+    // but use it to bring the photon out of low power mode.
+    // clear it hear if it had been set.
+    waterSenseTriggered = false;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -350,7 +381,7 @@ void doRollEmptyCalibration() {
     Particle.publish("status", "Performing roll absent calibration.");
     delay(1000);
         
-    for (int i=0; i<4; i++) {
+    for (int i=0; i<maxSensors; i++) {
         adcEmpty[i] = (uint16_t)readSensor(i);
         
         Particle.publish("status", "Empty Cal. Roll: " + String(i) + " ADC: "+ String(adcEmpty[i]));
@@ -373,7 +404,7 @@ void doRollPresentCalibration() {
     Particle.publish("status", "Performing roll present calibration.");
     delay(1000);
     
-    for (int i=0; i<4; i++) {
+    for (int i=0; i<maxSensors; i++) {
         adcFull[i] = (uint16_t)readSensor(i);
     
         Particle.publish("status", "Present Cal. Roll: " + String(i) + " ADC: "+ String(adcFull[i]));
@@ -388,19 +419,25 @@ void doRollPresentCalibration() {
 }
 
 void computeAdcThresholds() {
-    for (int i=0; i<4; i++) {
+    for (int i=0; i<maxSensors; i++) {
         uint16_t empty = adcEmpty[i]; //  higher value (e. 4086)
         uint16_t full = adcFull[i];   // lower value (e.g. 3984)
         
-        // e.g. (4086 - 3984)/2 == 51.
-        // Compute the midpoint between the full and empty value to determine 
-        // the threshold point for the 
-        uint16_t halfDifference = (empty - full) / 2;
-        
-        // take the lower value (full) and add the half difference
-        // to give the threshold for detection of the roll.
-        // e.g. 3984 + 51 = 4035
-        adcThresholds[i] = full + halfDifference;
+        if (empty > full) {
+            
+            // e.g. (4086 - 3984)/2 == 51.
+            // Compute the midpoint between the full and empty value to determine 
+            // the threshold point for the 
+            uint16_t halfDifference = (empty - full) / 2;
+            
+            // take the lower value (full) and add the half difference
+            // to give the threshold for detection of the roll.
+            // e.g. 3984 + 51 = 4035
+            adcThresholds[i] = full + halfDifference;
+        } else {
+            // Calibration error for this channel
+            Particle.publish("status", "Calibration error for channel: " + String(i) + " ADC for empty < present.");
+        }
     }
     
     // Now publish the thresholds
@@ -458,4 +495,12 @@ void readSettings() {
         Particle.publish("status","No valid config");
     }
     
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Interrupt handing
+//////////////////////////////////////////////////////////////////////////////
+
+void waterSenseIsr() {
+    waterSenseTriggered = true;
 }
