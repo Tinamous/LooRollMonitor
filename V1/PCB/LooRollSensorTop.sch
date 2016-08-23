@@ -8322,6 +8322,15 @@ Standard 0603 ceramic capacitor, and 0.1" leaded capacitor.</description>
 <text x="63.5" y="20.32" size="1.27" layer="97">Sleep wake up pin: D0, D1, D2, D3, D4, A0, A1, A3, A4, A5, A6, A7</text>
 <text x="38.1" y="40.64" size="1.27" layer="97" rot="R90">TODO: Water sense should wake Photon when water is detected.</text>
 <text x="170.18" y="-38.1" size="1.27" layer="97">Reverse mount under OSH LOGO</text>
+<text x="81.28" y="-48.26" size="1.778" layer="97">1.2V drop across LED.
+With 100R gives 21mA drive
+Max 50mA (continuous) 42R for R1</text>
+<text x="137.16" y="-63.5" size="1.778" layer="97">Roll absent, expect about 3.3V.
+Example values:
+Absent: ADC 4082
+Present: ADC 4041</text>
+<text x="50.8" y="-7.62" size="1.778" layer="97">V_Batt with 4x 1.5v AAA == 6V
+VBATTSENSE == 3v for fresh batteries</text>
 </plain>
 <instances>
 <instance part="U$1" gate="G$1" x="88.9" y="55.88"/>
@@ -8361,7 +8370,7 @@ Standard 0603 ceramic capacitor, and 0.1" leaded capacitor.</description>
 <instance part="C1" gate="G$1" x="208.28" y="71.12"/>
 <instance part="GND11" gate="1" x="208.28" y="63.5"/>
 <instance part="SUPPLY9" gate="G$1" x="208.28" y="78.74"/>
-<instance part="LOGO1" gate="G$1" x="185.42" y="-30.48"/>
+<instance part="LOGO1" gate="G$1" x="185.42" y="-27.94"/>
 <instance part="U2" gate="&gt;NAME" x="93.98" y="-58.42" rot="MR90"/>
 <instance part="R8" gate="G$1" x="109.22" y="-60.96" rot="R180"/>
 </instances>
