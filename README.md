@@ -1,7 +1,9 @@
-Toilet Roll Sensor
-==================
+Toilet Roll Monitor
+===================
 
-Internet collected toilet roll poll. Constructed of a 3D printed base and a acrylic pole which the toilet paper rolls are stacked.
+Never run out of toilet paper again!
+
+Internet collected toilet roll pole, constructed of a 3D printed base and a acrylic tube (pole) which the toilet paper rolls are stacked, internet connected with a Particle.io Photon.
 
 The presense of toilet rolls are sensed with a IR reflectance sensor. Reflected IR signal == roll preset, no reflection == no roll.
 
