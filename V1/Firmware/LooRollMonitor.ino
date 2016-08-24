@@ -67,11 +67,10 @@ int leds[] = {D2, D2, D2, D2};
 // "debug" led behind the OSH Logo.
 int oshLogoLedPin = A4;
 
-// Battery voltage sense pin.
-int vBattSensePin = DAC; // A6
-
 // Water sense pin.
 int waterSensePin = WKP; // A7 - used also for water sense trigger.
+// If water has been sensed.
+int waterSensed = false;
 
 // if water was sensed in the interrupt.
 volatile int waterSenseTriggered = false;
@@ -79,9 +78,13 @@ volatile int waterSenseTriggered = false;
 // If the water sensed alert has been published
 int waterSensedPublished = false;
 
+// Battery
+// Battery voltage sense pin.
+int vBattSensePin = DAC; // A6
 int vBattAdc = 0;
 int vBattAdcThreshold = 2048;
 bool lowBattery = false;
+double batteryVoltage = 0;
 
 //////////////////////////////////////////////////////////////////////////
 // Particle methods
@@ -126,18 +129,15 @@ void setup() {
     Particle.function("setMinRolls", setMinRolls);
     Particle.function("getCount", getCount);
     Particle.function("calibrate", calibrate);
-    Particle.publish("status", "Loo Roll Monitor V0.3.6");
-    RGB.color(0, 255, 0);
+    publishStatus("Loo Roll Monitor V0.4.00");
+    //Particle.publish("status", "Loo Roll Monitor V0.3.11");
+    
+    // Blue to indicate set-up 
+    // and not cleash with red/green of status
+    RGB.color(0, 0, 255);
     
     // Load in the ADC thresholds for the sensors and bits.
     readSettings();
-    
-    // If uncalibrated then assume first power up
-    // and perform an "Empty" calibration - hopefully
-    // no rolls present.
-    if (calibrationState == 0) {
-        doRollEmptyCalibration();   
-    }
     
     // Allow time to send status.
     delay(2000);
@@ -152,16 +152,12 @@ void loop() {
     // Whilst in High power mode keep the OSH LED on to indicate high power.
     // recovering from sleep mode indication...
     digitalWrite(oshLogoLedPin, HIGH);
-    RGB.brightness(100);
+    RGB.brightness(25);
     
     checkVBatt();
     checkLooRoll();
     checkWaterSense();
-    
-    // TODO: Only publish if values have actually changed.
-    if (publishAdcValues) {
-        Particle.publish("senml", "{e:[{'n':'A0','v':'" + String(adcValues[0]) + "'},{'n':'A1','v':'" + String(adcValues[1]) + "'},{'n':'A2','v':'" + String(adcValues[2]) + "'},{'n':'A3','v':'" + String(adcValues[3]) + "'}, {'n':'VBattAdc','v':'" + String(vBattAdc) + "'} ]}", 60, PRIVATE);
-    }
+    publishStatus();
     
         // If more than 0 then set RGB LED to green
     if (looRollCount > minimumRollCount && !waterSensedPublished) {
@@ -183,30 +179,29 @@ void sleep() {
     // If more than n minutes since the last reset
     // then go into Low power mode
     if (t > (60 * 1000)) {
-        publishAdcValues = false;
         //Particle.publish("status", "Going to sleep...");
+        //delay(1000);
+        
         // Indivate low power mode with a bright LED!
         digitalWrite(oshLogoLedPin, LOW);
-        RGB.brightness(0);
-        delay(1000);
+        RGB.brightness(5);
+        
         
         // Sleep WiFi (but still runs user code so
         // still runs high current (40mA))
-        System.sleep(30);
-        delay(30000);
+        //System.sleep(30);
+        //delay(30000);
         
-        Particle.publish("status","Awake!");
-        delay(2000);
+        // Deep sleep, wake after n seconds or falling edge on water sense pin.
+        // This sleep mode keeps memory preserved and allows for falling signal
+        // on interrupt pin (WKP here) to wake up.
+        // however it uses ca. 1-2mA
+        System.sleep(waterSensePin, FALLING, 30);
         
-        //publishAdcValues = false;
-        
-        // Deep sleep.
-        // Wakup on WKP pin.
-        //System.sleep(uint16_t wakeUpPin, uint16_t edgeTriggerMode, long seconds)
-        
-        // If water sense pin falls low this will wake the CPU
-        // otherwise it will wake after n seconds.
-        //System.sleep(waterSensePin, FALLING, 60);
+        //Particle.publish("status","Awake!");
+        //delay(5000);
+
+        publishAdcValues = false;
         
     } else {
         // Otherwise check every 10 seconds and don't go into low power
@@ -221,6 +216,14 @@ void sleep() {
         }
         publishAdcValues = true;
     }
+}
+
+void publishStatus() {
+    // Publish the number of rolls, water sense, 
+    // publish this every wake cycle regardless to keep
+    // monitor informed. 
+    publishSenML("{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'},{'n':'WaterSensed','v':'" + String(waterSensed) + "'},{'n':'VBatt','v':'" + String(batteryVoltage) + "'} ]}");
+        // Don't forget Temperature and humidity if they are measured.
 }
 
 
@@ -242,12 +245,18 @@ void checkLooRoll() {
     
     // Check to see if the number of rolls has changed since we 
     // last measured
-    if (count != looRollCount) {
+    if (count != looRollCount || publishAdcValues) {
         // Globally store the loo roll count
         // TODO: Write to EEPROM???
         looRollCount = count;
         
         notifyLooRollCountChanged();
+    }
+    
+    if (publishAdcValues) {
+        publishSenML("{e:[{'n':'A0','v':'" + String(adcValues[0]) + "'},{'n':'A1','v':'" + String(adcValues[1]) + "'},{'n':'A2','v':'" + String(adcValues[2]) + "'},{'n':'A3','v':'" + String(adcValues[3]) + "'} ]}");
+        //Particle.publish("senml", "{e:[{'n':'A0','v':'" + String(adcValues[0]) + "'},{'n':'A1','v':'" + String(adcValues[1]) + "'},{'n':'A2','v':'" + String(adcValues[2]) + "'},{'n':'A3','v':'" + String(adcValues[3]) + "'} ]}", 60, PRIVATE);
+        delay(1000);
     }
 }
 
@@ -255,13 +264,15 @@ void notifyLooRollCountChanged() {
     // TODO: Allow user to define minimum roll count.
     if (looRollCount <= minimumRollCount) {
         // Ensure we have a good delay for sending the message.
-        Particle.publish("status", "Loo roll Low!!! Rolls remaining: " + String(looRollCount));
+        publishStatus("Loo roll Low!!! Rolls remaining: " + String(looRollCount));
+        //Particle.publish("status", "Loo roll Low!!! Rolls remaining: " + String(looRollCount));
         delay(1000);
     }
         
     //Particle.publish("status", "Their are now " + String(looRollCount) + " loo rolls on the holder.");
     
-    Particle.publish("senml", "{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'} ]}", 60, PRIVATE);
+    //Particle.publish("senml", "{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'} ]}", 60, PRIVATE);
+    publishSenML("{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'} ]}");
     
     // Ensure we have a good delay for sending the message.
     // as we might sleep immediatly after and risk the 
@@ -293,25 +304,30 @@ bool hasLooRoll(int sensorId) {
 }
 
 
+
 //////////////////////////////////////////////////////////////////////////////
 // Water leak detection
 //////////////////////////////////////////////////////////////////////////////
 void checkWaterSense() {
     // Pin reads low if water is present.
-    int waterSensed = !digitalRead(waterSensePin);
+    waterSensed = !digitalRead(waterSensePin);
     
     // trigger once only.
     if (waterSensed && !waterSensedPublished) {
-        Particle.publish("status", "WATER LEAK DETECTED!");
-        Particle.publish("senml", "{e:[{'n':'WaterAdc','v':'" + String(waterSensed) + "'} ]}", 60, PRIVATE);
+        publishStatus("WATER LEAK DETECTED!");
+        //Particle.publish("status", "WATER LEAK DETECTED!");
+        publishSenML("{e:[{'n':'WaterSensed','v':'" + String(waterSensed) + "'} ]}");
+        //Particle.publish("senml", "{e:[{'n':'WaterSensed','v':'" + String(waterSensed) + "'} ]}", 60, PRIVATE);
         waterSensedPublished = true;
     }
     
     // If we have published water sense detected but it is not now.
     // then clear the warning
     if (!waterSensed && waterSensedPublished) {
-        Particle.publish("status", "Water leak cleared.");
-        Particle.publish("senml", "{e:[{'n':'WaterAdc','v':'" + String(waterSensed) + "'} ]}", 60, PRIVATE);
+        publishStatus("Water leak cleared.");
+        //Particle.publish("status", "Water leak cleared.");
+        publishSenML("{e:[{'n':'WaterSensed','v':'" + String(waterSensed) + "'} ]}");
+        //Particle.publish("senml", "{e:[{'n':'WaterSensed','v':'" + String(waterSensed) + "'} ]}", 60, PRIVATE);
         waterSensedPublished = false;
     }
     
@@ -327,13 +343,22 @@ void checkWaterSense() {
 void checkVBatt() {
     vBattAdc = analogRead(vBattSensePin);
     
+    // VBatt is split by voltage divider 2:1
+    batteryVoltage = ((double)vBattAdc * 0.0008) * (double)2; 
+    
     // trigger once only.
     if (!lowBattery && vBattAdc < vBattAdcThreshold) {
         lowBattery = true;
         Particle.publish("status", "Battery Low!");
         Particle.publish("senml", "{e:[{'n':'VBattAdc','v':'" + String(vBattAdc) + "'} ]}", 60, PRIVATE);
+        delay(1000);
       //  waterSenseTriggered = true;
     } 
+    
+    if (publishAdcValues) {
+        Particle.publish("senml", "{e:[{'n':'VBattAdc','v':'" + String(vBattAdc) + "'},{'n':'VBatt','v':'" + String(batteryVoltage) + "'} ]}", 60, PRIVATE);
+        delay(1000);
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -495,6 +520,23 @@ void readSettings() {
         Particle.publish("status","No valid config");
     }
     
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// Publishing helpers
+//////////////////////////////////////////////////////////////////////////////
+void publishStatus(String message) {
+    // TODO: Connect to Particle.io if needed
+    // wait for connection to establish
+    Particle.publish("status", message, 60, PRIVATE);
+    delay(1000);
+}
+
+void publishSenML(String message) {
+    // TODO: Connect to Particle.io if needed
+    // wait for connection to establish
+    Particle.publish("senml", message, 60, PRIVATE);
+    delay(1000);
 }
 
 //////////////////////////////////////////////////////////////////////////////
