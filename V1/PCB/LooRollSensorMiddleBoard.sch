@@ -7548,6 +7548,7 @@ Various common sizes : AA, AAA, 18650 (PRT-12895), 20mm coin cell and 12mm coin 
 <wire x1="160.02" y1="99.06" x2="160.02" y2="104.14" width="0.1524" layer="91"/>
 <wire x1="160.02" y1="104.14" x2="175.26" y2="104.14" width="0.1524" layer="91"/>
 <label x="175.26" y="104.14" size="1.27" layer="95" xref="yes"/>
+<junction x="160.02" y="104.14"/>
 </segment>
 </net>
 <net name="LEDDRIVE" class="0">
@@ -7679,6 +7680,7 @@ Various common sizes : AA, AAA, 18650 (PRT-12895), 20mm coin cell and 12mm coin 
 <wire x1="203.2" y1="53.34" x2="203.2" y2="55.88" width="0.1524" layer="91"/>
 <wire x1="203.2" y1="55.88" x2="210.82" y2="55.88" width="0.1524" layer="91"/>
 <label x="210.82" y="55.88" size="1.27" layer="95" xref="yes"/>
+<junction x="203.2" y="55.88"/>
 </segment>
 </net>
 </nets>
