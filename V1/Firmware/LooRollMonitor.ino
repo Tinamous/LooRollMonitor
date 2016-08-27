@@ -28,7 +28,7 @@
 uint8_t maxSensors = 3;
 
 // Default initial debugging setting to publish ADC values as they are read.
-bool publishAdcValues = true;
+bool publishAdcValues = false;
 
 // Initialise to defaults but calibrated values are loaded 
 // from EEPROM if the value is stored.
@@ -86,6 +86,8 @@ int vBattAdcThreshold = 2048;
 bool lowBattery = false;
 double batteryVoltage = 0;
 
+bool caibrating = false;
+
 //////////////////////////////////////////////////////////////////////////
 // Particle methods
 //////////////////////////////////////////////////////////////////////////
@@ -129,7 +131,7 @@ void setup() {
     Particle.function("setMinRolls", setMinRolls);
     Particle.function("getCount", getCount);
     Particle.function("calibrate", calibrate);
-    publishStatus("Loo Roll Monitor V0.4.00");
+    publishStatus("Loo Roll Monitor V0.4.07");
     //Particle.publish("status", "Loo Roll Monitor V0.3.11");
     
     // Blue to indicate set-up 
@@ -154,17 +156,19 @@ void loop() {
     digitalWrite(oshLogoLedPin, HIGH);
     RGB.brightness(25);
     
-    checkVBatt();
-    checkLooRoll();
-    checkWaterSense();
-    publishStatus();
-    
-        // If more than 0 then set RGB LED to green
-    if (looRollCount > minimumRollCount && !waterSensedPublished) {
-        RGB.color(0, 255, 0);
-    } else {
-        // If loo roll count low, or water sensed then show red.
-        RGB.color(255, 0, 0);
+    if (!caibrating) {
+        checkVBatt();
+        checkLooRoll();
+        checkWaterSense();
+        publishStatus();
+        
+            // If more than 0 then set RGB LED to green
+        if (looRollCount > minimumRollCount && !waterSensedPublished) {
+            RGB.color(0, 255, 0);
+        } else {
+            // If loo roll count low, or water sensed then show red.
+            RGB.color(255, 0, 0);
+        }
     }
     
     sleep();
@@ -178,7 +182,7 @@ void sleep() {
     
     // If more than n minutes since the last reset
     // then go into Low power mode
-    if (t > (60 * 1000)) {
+    if (t > (240 * 1000)) {
         //Particle.publish("status", "Going to sleep...");
         //delay(1000);
         
@@ -214,16 +218,28 @@ void sleep() {
                 return;
             }
         }
-        publishAdcValues = true;
+        publishAdcValues = false;
     }
 }
 
 void publishStatus() {
+    
+    String senmlFields = "{'n':'rollCount','v':'" + String(looRollCount) + "'}";
+    senmlFields += ",{'n':'WaterSensed','v':'" + String(waterSensed) + "'}";
+    senmlFields += ",{'n':'VBatt','v':'" + String(batteryVoltage) + "'}";
+    senmlFields += ",{'n':'A0','v':'" + String(adcValues[0]) + "'}";
+    senmlFields += ",{'n':'A1','v':'" + String(adcValues[1]) + "'}";
+    senmlFields += ",{'n':'A2','v':'" + String(adcValues[2]) + "'}";
+    
     // Publish the number of rolls, water sense, 
     // publish this every wake cycle regardless to keep
     // monitor informed. 
-    publishSenML("{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'},{'n':'WaterSensed','v':'" + String(waterSensed) + "'},{'n':'VBatt','v':'" + String(batteryVoltage) + "'} ]}");
-        // Don't forget Temperature and humidity if they are measured.
+    publishSenML("{e:[" + senmlFields +  "]}");
+    delay(2000);
+    // Don't forget Temperature and humidity if they are measured.
+    
+    // Hack for now to try and track down noise.
+     //publishSenML("{e:[{'n':'A0','v':'" + String(adcValues[0]) + "'},{'n':'A1','v':'" + String(adcValues[1]) + "'},{'n':'A2','v':'" + String(adcValues[2]) + "'} ]}");
 }
 
 
@@ -272,7 +288,8 @@ void notifyLooRollCountChanged() {
     //Particle.publish("status", "Their are now " + String(looRollCount) + " loo rolls on the holder.");
     
     //Particle.publish("senml", "{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'} ]}", 60, PRIVATE);
-    publishSenML("{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'} ]}");
+    //publishSenML("{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'} ]}");
+    publishStatus("Rolls remaining: " + String(looRollCount));
     
     // Ensure we have a good delay for sending the message.
     // as we might sleep immediatly after and risk the 
@@ -283,13 +300,26 @@ void notifyLooRollCountChanged() {
 // Read the IR sensor ADC value.
 int readSensor(int sensorId) {
     int ledChannel = leds[sensorId];
+    
+    // Compute how much the ADC input is decreased due to background IR
+    int adcBefore = analogRead(sensors[sensorId]);
+    int background = 4096 - adcBefore; 
+    
     digitalWrite(ledChannel, HIGH);
-    delay(20);
-    
+    delay(100);
     int adc = analogRead(sensors[sensorId]);
-    
     digitalWrite(ledChannel, LOW);
-    return adc;
+    delay(250);
+    
+    if (background > 10) {
+        Particle.publish("status", "background: " + String(background));
+        delay(1000);
+    }
+    
+
+    // Add the background value to the adc measured value to 
+    // compensage
+    return adc + background; // - adcBefore;
 }
 
 // Determine if a loo roll is present at the sensor position.
@@ -302,7 +332,6 @@ bool hasLooRoll(int sensorId) {
     // their is a roll there reflecting.
     return adcValues[sensorId] < adcThresholds[sensorId];
 }
-
 
 
 //////////////////////////////////////////////////////////////////////////////
@@ -350,15 +379,18 @@ void checkVBatt() {
     if (!lowBattery && vBattAdc < vBattAdcThreshold) {
         lowBattery = true;
         Particle.publish("status", "Battery Low!");
-        Particle.publish("senml", "{e:[{'n':'VBattAdc','v':'" + String(vBattAdc) + "'} ]}", 60, PRIVATE);
         delay(1000);
-      //  waterSenseTriggered = true;
+        publishBatteryLevel();
     } 
     
     if (publishAdcValues) {
-        Particle.publish("senml", "{e:[{'n':'VBattAdc','v':'" + String(vBattAdc) + "'},{'n':'VBatt','v':'" + String(batteryVoltage) + "'} ]}", 60, PRIVATE);
-        delay(1000);
+        publishBatteryLevel();
     }
+}
+
+void publishBatteryLevel() {
+    Particle.publish("senml", "{e:[{'n':'VBatt','v':'" + String(batteryVoltage) + "'} ]}", 60, PRIVATE);
+    delay(1000);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -403,21 +435,20 @@ int calibrate(String args) {
 // Calibrate the sensors with no rolls on the stand
 void doRollEmptyCalibration() {
     
+    caibrating = true;
     Particle.publish("status", "Performing roll absent calibration.");
-    delay(1000);
+    delay(2000);
         
     for (int i=0; i<maxSensors; i++) {
         adcEmpty[i] = (uint16_t)readSensor(i);
-        
-        Particle.publish("status", "Empty Cal. Roll: " + String(i) + " ADC: "+ String(adcEmpty[i]));
-        delay(1000);
     }
     
-    computeAdcThresholds();
+    Particle.publish("senml", "{e:[{'n':'A0-Absent','v':'" + String(adcEmpty[0]) + "'},{'n':'A1-Absent','v':'" + String(adcEmpty[1]) + "'},{'n':'A2-Absent','v':'" + String(adcEmpty[2]) + "'},{'n':'A3-Absent','v':'" + String(adcEmpty[3]) + "'},{'n':'Tags','sv':'Cal1,Empty'} ]}", 60, PRIVATE);
+    delay(2000);
     
     // Cal 1 performed. Forces cal2 to be redone but assumes values reasobable.
     calibrationState = 1; 
-    writeSettings();
+    caibrating = false;
 }
 
 // Calibrate the sensors fully fitted with rolls.
@@ -426,21 +457,24 @@ void doRollEmptyCalibration() {
 // This assumes cal 1 (empty cal), has been performed.
 void doRollPresentCalibration() {
     
+    caibrating = true;
     Particle.publish("status", "Performing roll present calibration.");
     delay(1000);
     
     for (int i=0; i<maxSensors; i++) {
         adcFull[i] = (uint16_t)readSensor(i);
-    
-        Particle.publish("status", "Present Cal. Roll: " + String(i) + " ADC: "+ String(adcFull[i]));
-        delay(1000);
     }
+    
+    Particle.publish("senml", "{e:[{'n':'A0-Present','v':'" + String(adcFull[0]) + "'},{'n':'A1-Present','v':'" + String(adcFull[1]) + "'},{'n':'A2-Present','v':'" + String(adcFull[2]) + "'},{'n':'A3-Present','v':'" + String(adcFull[3]) + "'},{'n':'Tags','sv':'Cal2,Full'} ]}", 60, PRIVATE);
+    delay(2000);
 
     computeAdcThresholds();
     
     // Cal 2 performed (assumed cal 1 performed)
     calibrationState = 2; 
     writeSettings();
+    caibrating = false;
+    
 }
 
 void computeAdcThresholds() {
@@ -469,10 +503,10 @@ void computeAdcThresholds() {
     Particle.publish("senml", "{e:[{'n':'A0-Threshold','v':'" + String(adcThresholds[0]) + "'},{'n':'A1-Threshold','v':'" + String(adcThresholds[1]) + "'},{'n':'A2-Threshold','v':'" + String(adcThresholds[2]) + "'},{'n':'A3-Threshold','v':'" + String(adcThresholds[3]) + "'} ]}", 60, PRIVATE);
     
     // Publish cal 1 and cal 2 values as well to help debug, with a small delay to prevent rate limiting.
-    delay(1000);
-    Particle.publish("senml", "{e:[{'n':'A0','v':'" + String(adcEmpty[0]) + "'},{'n':'A1','v':'" + String(adcEmpty[1]) + "'},{'n':'A2','v':'" + String(adcEmpty[2]) + "'},{'n':'A3','v':'" + String(adcEmpty[3]) + "'},{'n':'Tags','sv':'Cal1,Empty'} ]}", 60, PRIVATE);
-    delay(1000);
-    Particle.publish("senml", "{e:[{'n':'A0','v':'" + String(adcFull[0]) + "'},{'n':'A1','v':'" + String(adcFull[1]) + "'},{'n':'A2','v':'" + String(adcFull[2]) + "'},{'n':'A3','v':'" + String(adcFull[3]) + "'},{'n':'Tags','sv':'Cal2,Full'} ]}", 60, PRIVATE);
+    //delay(1000);
+    //Particle.publish("senml", "{e:[{'n':'A0','v':'" + String(adcEmpty[0]) + "'},{'n':'A1','v':'" + String(adcEmpty[1]) + "'},{'n':'A2','v':'" + String(adcEmpty[2]) + "'},{'n':'A3','v':'" + String(adcEmpty[3]) + "'},{'n':'Tags','sv':'Cal1,Empty'} ]}", 60, PRIVATE);
+    //delay(1000);
+    //Particle.publish("senml", "{e:[{'n':'A0','v':'" + String(adcFull[0]) + "'},{'n':'A1','v':'" + String(adcFull[1]) + "'},{'n':'A2','v':'" + String(adcFull[2]) + "'},{'n':'A3','v':'" + String(adcFull[3]) + "'},{'n':'Tags','sv':'Cal2,Full'} ]}", 60, PRIVATE);
 }
 
 //////////////////////////////////////////////////////////////////////////////
