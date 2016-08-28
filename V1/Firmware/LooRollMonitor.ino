@@ -24,6 +24,12 @@
 // When the roll count changes a senml message is published with the roll count.
 // 
 
+// How long to sleep for when entering deep sleep.
+// Development: 30s...
+int deepSleepTimeSeconds = 30;
+// Production: 3600 (1 hour) or more is usable
+//int deepSleepTimeSeconds = 3600;
+
 // The maximum number of sensors on the board. values 1-4 acceptable.
 uint8_t maxSensors = 3;
 
@@ -82,11 +88,12 @@ int waterSensedPublished = false;
 // Battery voltage sense pin.
 int vBattSensePin = DAC; // A6
 int vBattAdc = 0;
-int vBattAdcThreshold = 2048;
+int vBattThreshold = 3.8; // 3.8V cutoff for low battery
 bool lowBattery = false;
 double batteryVoltage = 0;
 
-bool caibrating = false;
+bool calibrating = false;
+bool messagePublishedWithNoDelay = false;
 
 //////////////////////////////////////////////////////////////////////////
 // Particle methods
@@ -100,6 +107,7 @@ int calibrate(String args);
 //////////////////////////////////////////////////////////////////////////
 void setup() {
     RGB.control(true);
+    RGB.brightness(25);
     RGB.color(0, 0, 255);
     
     for (int i=0; i<maxSensors; i++) {
@@ -131,8 +139,7 @@ void setup() {
     Particle.function("setMinRolls", setMinRolls);
     Particle.function("getCount", getCount);
     Particle.function("calibrate", calibrate);
-    publishStatus("Loo Roll Monitor V0.4.07");
-    //Particle.publish("status", "Loo Roll Monitor V0.3.11");
+    publishStatus("Loo Roll Monitor V0.5.01", false);
     
     // Blue to indicate set-up 
     // and not cleash with red/green of status
@@ -140,9 +147,6 @@ void setup() {
     
     // Load in the ADC thresholds for the sensors and bits.
     readSettings();
-    
-    // Allow time to send status.
-    delay(2000);
     
     // Now attach the water sense interrupt.
     // only interested in falling edge to indicate water present
@@ -156,22 +160,44 @@ void loop() {
     digitalWrite(oshLogoLedPin, HIGH);
     RGB.brightness(25);
     
-    if (!caibrating) {
+    if (!calibrating) {
         checkVBatt();
-        checkLooRoll();
         checkWaterSense();
-        publishStatus();
         
-            // If more than 0 then set RGB LED to green
-        if (looRollCount > minimumRollCount && !waterSensedPublished) {
-            RGB.color(0, 255, 0);
-        } else {
-            // If loo roll count low, or water sensed then show red.
+        // If the battery is low then hold off checking the rolls
+        // as it may kill the battery.
+        if (!lowBattery) {
+            checkLooRoll();
+            publishSystemState();
+        }
+        
+        // Show a warning (red) led if their is a problem.    
+        if (shouldShowWarning()) {
             RGB.color(255, 0, 0);
+        } else {
+            RGB.color(0, 255, 0);
         }
     }
     
     sleep();
+}
+
+// Determine if a warning LED should be shown
+// e.g. Battery low, water sensed or loo roll count is low.
+bool shouldShowWarning() {
+    if (looRollCount <= minimumRollCount) {
+        return true;
+    }
+        
+    if (waterSensedPublished) {
+        return true;
+    }
+            
+    if (lowBattery) {
+        return true;            
+    }
+    
+    return false;
 }
 
 // Sleep the Photon, depending on how long it's been awake
@@ -183,32 +209,25 @@ void sleep() {
     // If more than n minutes since the last reset
     // then go into Low power mode
     if (t > (240 * 1000)) {
-        //Particle.publish("status", "Going to sleep...");
-        //delay(1000);
         
-        // Indivate low power mode with a bright LED!
-        digitalWrite(oshLogoLedPin, LOW);
-        RGB.brightness(5);
-        
-        
-        // Sleep WiFi (but still runs user code so
-        // still runs high current (40mA))
-        //System.sleep(30);
-        //delay(30000);
-        
+        // Small delay to ensure any messages that needed to be 
+        // pushed to Particle are gone before sleeping.
+        if (messagePublishedWithNoDelay) {
+            delay(2000);
+        }
+    
         // Deep sleep, wake after n seconds or falling edge on water sense pin.
         // This sleep mode keeps memory preserved and allows for falling signal
         // on interrupt pin (WKP here) to wake up.
         // however it uses ca. 1-2mA
-        System.sleep(waterSensePin, FALLING, 30);
+        System.sleep(waterSensePin, FALLING, deepSleepTimeSeconds);
         
-        //Particle.publish("status","Awake!");
-        //delay(5000);
-
+        // Don't publish debug ADC values whilst in low power mode.
         publishAdcValues = false;
         
     } else {
-        // Otherwise check every 10 seconds and don't go into low power
+        // Debug mode:
+        // Check every 10 seconds and don't go into low power
         // Handy for debug or initial power up + firmware updates
         for (int i=0; i<10; i++) {
             delay(1000);
@@ -222,26 +241,24 @@ void sleep() {
     }
 }
 
-void publishStatus() {
+// Publish the system status (roll count, water sensed, battery level etc.)
+void publishSystemState() {
     
     String senmlFields = "{'n':'rollCount','v':'" + String(looRollCount) + "'}";
     senmlFields += ",{'n':'WaterSensed','v':'" + String(waterSensed) + "'}";
     senmlFields += ",{'n':'VBatt','v':'" + String(batteryVoltage) + "'}";
+    // Debug fields
     senmlFields += ",{'n':'A0','v':'" + String(adcValues[0]) + "'}";
     senmlFields += ",{'n':'A1','v':'" + String(adcValues[1]) + "'}";
     senmlFields += ",{'n':'A2','v':'" + String(adcValues[2]) + "'}";
+    
+    // Don't forget Temperature and humidity if they are measured.
     
     // Publish the number of rolls, water sense, 
     // publish this every wake cycle regardless to keep
     // monitor informed. 
     publishSenML("{e:[" + senmlFields +  "]}");
-    delay(2000);
-    // Don't forget Temperature and humidity if they are measured.
-    
-    // Hack for now to try and track down noise.
-     //publishSenML("{e:[{'n':'A0','v':'" + String(adcValues[0]) + "'},{'n':'A1','v':'" + String(adcValues[1]) + "'},{'n':'A2','v':'" + String(adcValues[2]) + "'} ]}");
 }
-
 
 //////////////////////////////////////////////////////////////////////////////
 // Roll detection
@@ -252,6 +269,7 @@ void checkLooRoll() {
     
     // Work up the sensors from the lowest (A0)
     // to the highest (A3 or ...)
+    // This is not the most optimal use of power but is easy...
     for (int i=0; i<maxSensors; i++) {
         hasRoll[i] = hasLooRoll(i);
         if (hasRoll[i]) {
@@ -260,41 +278,29 @@ void checkLooRoll() {
     }
     
     // Check to see if the number of rolls has changed since we 
-    // last measured
+    // last measured and 
     if (count != looRollCount || publishAdcValues) {
-        // Globally store the loo roll count
-        // TODO: Write to EEPROM???
         looRollCount = count;
         
         notifyLooRollCountChanged();
+        
+        // Store in EEPROM the count
+        writeLooRollCount();
     }
     
     if (publishAdcValues) {
         publishSenML("{e:[{'n':'A0','v':'" + String(adcValues[0]) + "'},{'n':'A1','v':'" + String(adcValues[1]) + "'},{'n':'A2','v':'" + String(adcValues[2]) + "'},{'n':'A3','v':'" + String(adcValues[3]) + "'} ]}");
-        //Particle.publish("senml", "{e:[{'n':'A0','v':'" + String(adcValues[0]) + "'},{'n':'A1','v':'" + String(adcValues[1]) + "'},{'n':'A2','v':'" + String(adcValues[2]) + "'},{'n':'A3','v':'" + String(adcValues[3]) + "'} ]}", 60, PRIVATE);
-        delay(1000);
     }
 }
 
 void notifyLooRollCountChanged() {
-    // TODO: Allow user to define minimum roll count.
+    
     if (looRollCount <= minimumRollCount) {
         // Ensure we have a good delay for sending the message.
-        publishStatus("Loo roll Low!!! Rolls remaining: " + String(looRollCount));
-        //Particle.publish("status", "Loo roll Low!!! Rolls remaining: " + String(looRollCount));
-        delay(1000);
+        publishStatus("Loo roll Low!!! Rolls remaining: " + String(looRollCount), true);
     }
         
-    //Particle.publish("status", "Their are now " + String(looRollCount) + " loo rolls on the holder.");
-    
-    //Particle.publish("senml", "{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'} ]}", 60, PRIVATE);
-    //publishSenML("{e:[{'n':'rollCount','v':'" + String(looRollCount) + "'} ]}");
-    publishStatus("Rolls remaining: " + String(looRollCount));
-    
-    // Ensure we have a good delay for sending the message.
-    // as we might sleep immediatly after and risk the 
-    // message not having been sent.
-    delay(2000);
+    publishStatus("Rolls remaining: " + String(looRollCount), false);
 }
 
 // Read the IR sensor ADC value.
@@ -305,21 +311,23 @@ int readSensor(int sensorId) {
     int adcBefore = analogRead(sensors[sensorId]);
     int background = 4096 - adcBefore; 
     
+    // Enable the IR LED and measure the reflectance level
+    // A lower ADC value means more reflectance.
     digitalWrite(ledChannel, HIGH);
-    delay(100);
+    delay(20);
     int adc = analogRead(sensors[sensorId]);
     digitalWrite(ledChannel, LOW);
     delay(250);
     
     if (background > 10) {
-        Particle.publish("status", "background: " + String(background));
-        delay(1000);
+        // Debug to catch possible background noise. Should not be 
+        // sent under normal operation.
+        publishStatus("background: " + String(background), false);
     }
     
 
-    // Add the background value to the adc measured value to 
-    // compensage
-    return adc + background; // - adcBefore;
+    // Add the background value to the adc measured value to  compensate
+    return adc + background;
 }
 
 // Determine if a loo roll is present at the sensor position.
@@ -333,7 +341,6 @@ bool hasLooRoll(int sensorId) {
     return adcValues[sensorId] < adcThresholds[sensorId];
 }
 
-
 //////////////////////////////////////////////////////////////////////////////
 // Water leak detection
 //////////////////////////////////////////////////////////////////////////////
@@ -343,26 +350,25 @@ void checkWaterSense() {
     
     // trigger once only.
     if (waterSensed && !waterSensedPublished) {
-        publishStatus("WATER LEAK DETECTED!");
-        //Particle.publish("status", "WATER LEAK DETECTED!");
+        publishStatus("WATER LEAK DETECTED!", true);
         publishSenML("{e:[{'n':'WaterSensed','v':'" + String(waterSensed) + "'} ]}");
-        //Particle.publish("senml", "{e:[{'n':'WaterSensed','v':'" + String(waterSensed) + "'} ]}", 60, PRIVATE);
         waterSensedPublished = true;
+        
+        // Small delay to allow critical message to be published.
+        delay(2000);
     }
     
     // If we have published water sense detected but it is not now.
     // then clear the warning
     if (!waterSensed && waterSensedPublished) {
-        publishStatus("Water leak cleared.");
-        //Particle.publish("status", "Water leak cleared.");
+        publishStatus("Water leak cleared.", false);
         publishSenML("{e:[{'n':'WaterSensed','v':'" + String(waterSensed) + "'} ]}");
-        //Particle.publish("senml", "{e:[{'n':'WaterSensed','v':'" + String(waterSensed) + "'} ]}", 60, PRIVATE);
         waterSensedPublished = false;
     }
     
     // Don't do any action on waterSenseTriggered
     // but use it to bring the photon out of low power mode.
-    // clear it hear if it had been set.
+    // clear it hear if it had been set by the interrupt
     waterSenseTriggered = false;
 }
 
@@ -376,21 +382,10 @@ void checkVBatt() {
     batteryVoltage = ((double)vBattAdc * 0.0008) * (double)2; 
     
     // trigger once only.
-    if (!lowBattery && vBattAdc < vBattAdcThreshold) {
+    if (!lowBattery && batteryVoltage < vBattThreshold) {
         lowBattery = true;
-        Particle.publish("status", "Battery Low!");
-        delay(1000);
-        publishBatteryLevel();
+        publishStatus("Battery Low!", true);
     } 
-    
-    if (publishAdcValues) {
-        publishBatteryLevel();
-    }
-}
-
-void publishBatteryLevel() {
-    Particle.publish("senml", "{e:[{'n':'VBatt','v':'" + String(batteryVoltage) + "'} ]}", 60, PRIVATE);
-    delay(1000);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -435,20 +430,18 @@ int calibrate(String args) {
 // Calibrate the sensors with no rolls on the stand
 void doRollEmptyCalibration() {
     
-    caibrating = true;
-    Particle.publish("status", "Performing roll absent calibration.");
-    delay(2000);
+    calibrating = true;
+    publishStatus("Performing roll absent calibration.", true);
         
     for (int i=0; i<maxSensors; i++) {
         adcEmpty[i] = (uint16_t)readSensor(i);
     }
     
-    Particle.publish("senml", "{e:[{'n':'A0-Absent','v':'" + String(adcEmpty[0]) + "'},{'n':'A1-Absent','v':'" + String(adcEmpty[1]) + "'},{'n':'A2-Absent','v':'" + String(adcEmpty[2]) + "'},{'n':'A3-Absent','v':'" + String(adcEmpty[3]) + "'},{'n':'Tags','sv':'Cal1,Empty'} ]}", 60, PRIVATE);
-    delay(2000);
+    publishSenML("{e:[{'n':'A0-Absent','v':'" + String(adcEmpty[0]) + "'},{'n':'A1-Absent','v':'" + String(adcEmpty[1]) + "'},{'n':'A2-Absent','v':'" + String(adcEmpty[2]) + "'},{'n':'A3-Absent','v':'" + String(adcEmpty[3]) + "'},{'n':'Tags','sv':'Cal1,Empty'} ]}");
     
     // Cal 1 performed. Forces cal2 to be redone but assumes values reasobable.
     calibrationState = 1; 
-    caibrating = false;
+    calibrating = false;
 }
 
 // Calibrate the sensors fully fitted with rolls.
@@ -457,23 +450,21 @@ void doRollEmptyCalibration() {
 // This assumes cal 1 (empty cal), has been performed.
 void doRollPresentCalibration() {
     
-    caibrating = true;
-    Particle.publish("status", "Performing roll present calibration.");
-    delay(1000);
-    
+    calibrating = true;
+    publishStatus("Performing roll present calibration.", true);
+
     for (int i=0; i<maxSensors; i++) {
         adcFull[i] = (uint16_t)readSensor(i);
     }
     
-    Particle.publish("senml", "{e:[{'n':'A0-Present','v':'" + String(adcFull[0]) + "'},{'n':'A1-Present','v':'" + String(adcFull[1]) + "'},{'n':'A2-Present','v':'" + String(adcFull[2]) + "'},{'n':'A3-Present','v':'" + String(adcFull[3]) + "'},{'n':'Tags','sv':'Cal2,Full'} ]}", 60, PRIVATE);
-    delay(2000);
+    publishSenML("{e:[{'n':'A0-Present','v':'" + String(adcFull[0]) + "'},{'n':'A1-Present','v':'" + String(adcFull[1]) + "'},{'n':'A2-Present','v':'" + String(adcFull[2]) + "'},{'n':'A3-Present','v':'" + String(adcFull[3]) + "'},{'n':'Tags','sv':'Cal2,Full'} ]}");
 
     computeAdcThresholds();
     
     // Cal 2 performed (assumed cal 1 performed)
     calibrationState = 2; 
     writeSettings();
-    caibrating = false;
+    calibrating = false;
     
 }
 
@@ -495,12 +486,13 @@ void computeAdcThresholds() {
             adcThresholds[i] = full + halfDifference;
         } else {
             // Calibration error for this channel
-            Particle.publish("status", "Calibration error for channel: " + String(i) + " ADC for empty < present.");
+            publishStatus("Calibration error for channel: " + String(i) + " ADC for empty < present.", true);
         }
     }
     
-    // Now publish the thresholds
-    Particle.publish("senml", "{e:[{'n':'A0-Threshold','v':'" + String(adcThresholds[0]) + "'},{'n':'A1-Threshold','v':'" + String(adcThresholds[1]) + "'},{'n':'A2-Threshold','v':'" + String(adcThresholds[2]) + "'},{'n':'A3-Threshold','v':'" + String(adcThresholds[3]) + "'} ]}", 60, PRIVATE);
+    // Now publish the thresholds (small delay to prevent rate limiting @ particle as a few messages are published during calibration)
+    delay(2000);
+    publishSenML("{e:[{'n':'A0-Threshold','v':'" + String(adcThresholds[0]) + "'},{'n':'A1-Threshold','v':'" + String(adcThresholds[1]) + "'},{'n':'A2-Threshold','v':'" + String(adcThresholds[2]) + "'},{'n':'A3-Threshold','v':'" + String(adcThresholds[3]) + "'} ]}");
     
     // Publish cal 1 and cal 2 values as well to help debug, with a small delay to prevent rate limiting.
     //delay(1000);
@@ -529,11 +521,17 @@ void writeSettings() {
     // Calibration Stage. 0 = Uncalibrated. 1 = cal1 (empty), 2 = Cal2 (empty), 255 = eeprom default - uncalibrated.
     EEPROM.write(1, calibrationState); 
     EEPROM.write(2, maxSensors); 
-    EEPROM.write(3, looRollCount); 
+    writeLooRollCount();
     EEPROM.write(4, minimumRollCount);
     EEPROM.put(10, adcEmpty);
     EEPROM.put(20, adcFull);
     EEPROM.put(30, adcThresholds);
+}
+
+// This will change frequently so allow it to be 
+// set by itself rather than write all the settings 
+void writeLooRollCount() {
+    EEPROM.write(3, looRollCount); 
 }
 
 void readSettings() {
@@ -542,7 +540,6 @@ void readSettings() {
     uint8_t version = EEPROM.read(0);
     
     if (version == 1) {
-        Particle.publish("status","Loading config");
         calibrationState = EEPROM.read(1);
         maxSensors = EEPROM.read(2);
         looRollCount = EEPROM.read(3);
@@ -550,20 +547,28 @@ void readSettings() {
         EEPROM.get(10, adcEmpty);
         EEPROM.get(20, adcFull);
         EEPROM.get(30, adcThresholds);
-    } else {
-        Particle.publish("status","No valid config");
-    }
-    
+    } 
 }
 
 //////////////////////////////////////////////////////////////////////////////
 // Publishing helpers
 //////////////////////////////////////////////////////////////////////////////
-void publishStatus(String message) {
+void publishStatus(String message, bool isCritical) {
     // TODO: Connect to Particle.io if needed
     // wait for connection to establish
+    
     Particle.publish("status", message, 60, PRIVATE);
-    delay(1000);
+    
+    if (isCritical) {
+        // Delay to ensure critical messages are sent
+        // and don't sit in the buffer
+        delay(2000);
+    } else {
+        // Message has been published without a delay
+        // may need a delay to ensure that the message
+        // is actually sent.
+        messagePublishedWithNoDelay = true;
+    }
 }
 
 void publishSenML(String message) {
@@ -571,6 +576,8 @@ void publishSenML(String message) {
     // wait for connection to establish
     Particle.publish("senml", message, 60, PRIVATE);
     delay(1000);
+    
+    //messagePublishedWithNoDelay = true;
 }
 
 //////////////////////////////////////////////////////////////////////////////
