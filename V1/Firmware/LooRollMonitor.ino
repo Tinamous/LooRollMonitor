@@ -24,11 +24,15 @@
 // When the roll count changes a senml message is published with the roll count.
 // 
 
+STARTUP(System.enableFeature(FEATURE_RETAINED_MEMORY));
+
 // How long to sleep for when entering deep sleep.
 // Development: 30s...
-int deepSleepTimeSeconds = 30;
+//int deepSleepTimeSeconds = 60;
 // Production: 3600 (1 hour) or more is usable
-//int deepSleepTimeSeconds = 3600;
+int deepSleepTimeSeconds = 3600;
+
+int debugSleepSeconds = 10;
 
 // The maximum number of sensors on the board. values 1-4 acceptable.
 uint8_t maxSensors = 3;
@@ -58,10 +62,13 @@ uint8_t calibrationState = 0;
 uint8_t minimumRollCount = 1;
 
 // The number of loo rolls detected.
-uint8_t looRollCount = -1;
+// Stored in backupd ram so will be kept between
+// deep sleeps
+retained uint8_t looRollCount = -1;
 
 // Individual sensor values for the rolls.
 bool hasRoll[] = {false, false, false, false};
+
 // The ADC values read for the rolls.
 int adcValues[] = {0,0,0,0};
 
@@ -69,6 +76,8 @@ int adcValues[] = {0,0,0,0};
 int sensors[] = {A0, A1, A2, A3};
 // V1 PCB, all sensors are using D2 for LED drive.
 int leds[] = {D2, D2, D2, D2};
+// V1 hardware has single drive pin
+int ledPin = D2;
 
 // "debug" led behind the OSH Logo.
 int oshLogoLedPin = A4;
@@ -82,7 +91,9 @@ int waterSensed = false;
 volatile int waterSenseTriggered = false;
 
 // If the water sensed alert has been published
-int waterSensedPublished = false;
+// Stored in backupd ram so will be kept between
+// deep sleeps
+retained int waterSensedPublished = false;
 
 // Battery
 // Battery voltage sense pin.
@@ -95,12 +106,21 @@ double batteryVoltage = 0;
 bool calibrating = false;
 bool messagePublishedWithNoDelay = false;
 
+retained bool isWakeFromPowerSave = false;
+
+// how long between reset and set-up completing (i.e. connect)
+unsigned long timeToConnect = 0;
+
+// how long from reset to sleep (i.e. running on full power)
+retained unsigned long timeToSleep = 0;
+
 //////////////////////////////////////////////////////////////////////////
 // Particle methods
 //////////////////////////////////////////////////////////////////////////
 int setMinRolls(String args);
 int getCount(String args);
 int calibrate(String args);
+int getCalibration(String args);
 
 //////////////////////////////////////////////////////////////////////////
 // Setup
@@ -108,6 +128,7 @@ int calibrate(String args);
 void setup() {
     RGB.control(true);
     RGB.brightness(25);
+    // Blue to indicate set-up and not cleash with red/green of status
     RGB.color(0, 0, 255);
     
     for (int i=0; i<maxSensors; i++) {
@@ -116,20 +137,16 @@ void setup() {
         digitalWrite(leds[i], LOW);
     }
     
-    // Water sensor
-    pinMode(A5, INPUT);
-    pinMode(D6, OUTPUT);
-    digitalWrite(D6, LOW);
-    
-    // OSH Logo LED
+    // OSH Logo (High power mode) LED
     pinMode(oshLogoLedPin, OUTPUT);
-    digitalWrite(oshLogoLedPin, LOW);
+    digitalWrite(oshLogoLedPin, HIGH);
     
     // Water sense pin
     // This is used as the wake up pin
-    pinMode(waterSensePin, INPUT_PULLUP);
+    // Active low digital input.
+    // pinMode(waterSensePin, INPUT_PULLUP);
     
-    // Battery sense
+    // Battery sense. Analog input.
     pinMode(vBattSensePin, INPUT);
     
     // Debug
@@ -139,11 +156,13 @@ void setup() {
     Particle.function("setMinRolls", setMinRolls);
     Particle.function("getCount", getCount);
     Particle.function("calibrate", calibrate);
-    publishStatus("Loo Roll Monitor V0.5.01", false);
+    Particle.function("getCal", getCalibration);
     
-    // Blue to indicate set-up 
-    // and not cleash with red/green of status
-    RGB.color(0, 0, 255);
+    // Publish version info on first start only
+    if (!isWakeFromPowerSave) {
+        publishStatus("Loo Roll Monitor V0.5.15", false);
+        
+    }
     
     // Load in the ADC thresholds for the sensors and bits.
     readSettings();
@@ -151,7 +170,9 @@ void setup() {
     // Now attach the water sense interrupt.
     // only interested in falling edge to indicate water present
     // allow natural polling to clear it
-    attachInterrupt(waterSensePin, waterSenseIsr, FALLING);
+    //attachInterrupt(waterSensePin, waterSenseIsr, FALLING);
+    
+    timeToConnect = millis();
 }
 
 void loop() {
@@ -168,14 +189,18 @@ void loop() {
         // as it may kill the battery.
         if (!lowBattery) {
             checkLooRoll();
-            publishSystemState();
         }
         
         // Show a warning (red) led if their is a problem.    
+        // Do this before publishing so it's shown for a little bit longer.
         if (shouldShowWarning()) {
             RGB.color(255, 0, 0);
         } else {
             RGB.color(0, 255, 0);
+        }
+        
+        if (!lowBattery) {
+            publishSystemState();
         }
     }
     
@@ -206,21 +231,39 @@ void sleep() {
     // millis not affected by sleep.
     unsigned long t = millis();
     
-    // If more than n minutes since the last reset
-    // then go into Low power mode
-    if (t > (240 * 1000)) {
+    // If more than n minutes since the power on
+    // then go into Low power mode, or if the power-up
+    // was caused by a deep sleep power down.
+    if (isWakeFromPowerSave || t > (120 * 1000)) {
         
         // Small delay to ensure any messages that needed to be 
         // pushed to Particle are gone before sleeping.
         if (messagePublishedWithNoDelay) {
             delay(2000);
         }
-    
-        // Deep sleep, wake after n seconds or falling edge on water sense pin.
+        
+        digitalWrite(oshLogoLedPin, LOW);
+        
+        // Next power-up will not be the initial one
+        // so the delay before sleeping can be ignored.
+        //isInitialPowerUp = false;
+        isWakeFromPowerSave = true;
+        timeToSleep = millis();
+        
+        // Deep sleep: wake after n seconds or rising edge on WKP
+        // (water sense pin) - however water sense is active low so wkp 
+        // will only trigger 
+        // NB: Need pull-down for LED drive to ensure LEDs are not
+        // turned on when in deep sleep.
+        // WKP being high because of water sense appears to break
+        // this being pulled out of deep sleep.
+        System.sleep(SLEEP_MODE_DEEP, deepSleepTimeSeconds);
+        
+        // Stop mode: wake after n seconds or falling edge on water sense pin.
         // This sleep mode keeps memory preserved and allows for falling signal
         // on interrupt pin (WKP here) to wake up.
         // however it uses ca. 1-2mA
-        System.sleep(waterSensePin, FALLING, deepSleepTimeSeconds);
+        //System.sleep(waterSensePin, FALLING, deepSleepTimeSeconds);
         
         // Don't publish debug ADC values whilst in low power mode.
         publishAdcValues = false;
@@ -229,7 +272,7 @@ void sleep() {
         // Debug mode:
         // Check every 10 seconds and don't go into low power
         // Handy for debug or initial power up + firmware updates
-        for (int i=0; i<10; i++) {
+        for (int i=0; i<debugSleepSeconds; i++) {
             delay(1000);
             // If water sensed then exit out of the delay
             // and allow the loop to process the status.
@@ -237,6 +280,8 @@ void sleep() {
                 return;
             }
         }
+        
+        // Set true to help debugging.
         publishAdcValues = false;
     }
 }
@@ -251,6 +296,8 @@ void publishSystemState() {
     senmlFields += ",{'n':'A0','v':'" + String(adcValues[0]) + "'}";
     senmlFields += ",{'n':'A1','v':'" + String(adcValues[1]) + "'}";
     senmlFields += ",{'n':'A2','v':'" + String(adcValues[2]) + "'}";
+    senmlFields += ",{'n':'TConn','v':'" + String(timeToConnect) + "'}";
+    senmlFields += ",{'n':'TTS','v':'" + String(timeToSleep) + "'}";
     
     // Don't forget Temperature and humidity if they are measured.
     
@@ -270,6 +317,8 @@ void checkLooRoll() {
     // Work up the sensors from the lowest (A0)
     // to the highest (A3 or ...)
     // This is not the most optimal use of power but is easy...
+    // It is also ignores gravity defying errors (e.g. base roll
+    // may appear to be absent but rolls above present)
     for (int i=0; i<maxSensors; i++) {
         hasRoll[i] = hasLooRoll(i);
         if (hasRoll[i]) {
@@ -286,10 +335,6 @@ void checkLooRoll() {
         
         // Store in EEPROM the count
         writeLooRollCount();
-    }
-    
-    if (publishAdcValues) {
-        publishSenML("{e:[{'n':'A0','v':'" + String(adcValues[0]) + "'},{'n':'A1','v':'" + String(adcValues[1]) + "'},{'n':'A2','v':'" + String(adcValues[2]) + "'},{'n':'A3','v':'" + String(adcValues[3]) + "'} ]}");
     }
 }
 
@@ -314,10 +359,10 @@ int readSensor(int sensorId) {
     // Enable the IR LED and measure the reflectance level
     // A lower ADC value means more reflectance.
     digitalWrite(ledChannel, HIGH);
-    delay(20);
+    delay(400);
     int adc = analogRead(sensors[sensorId]);
     digitalWrite(ledChannel, LOW);
-    delay(250);
+    delay(500);
     
     if (background > 10) {
         // Debug to catch possible background noise. Should not be 
@@ -423,6 +468,27 @@ int calibrate(String args) {
     
 }
 
+// Request to publish calibration details as status post.
+// 1: Cal1
+// 2: Cal2
+// 3: Thresholds.
+int getCalibration(String args) {
+     switch (args.toInt()) {
+        case 1:
+            publishStatus("A0:" + String(adcEmpty[0]) + ", A1:" + String(adcEmpty[1]) + ", A2:" + String(adcEmpty[2]) + ", A3:" + String(adcEmpty[3]) + " #Cal1 #RollsAbsent", true);
+            return 1;
+        case 2:
+            publishStatus("A0:" + String(adcFull[0]) + ", A1:" + String(adcFull[1]) + ", A2:" + String(adcFull[2]) + ", A3:" + String(adcFull[3]) + " #Cal2 #RollsPresent", true);
+            return 2;
+        case 3:
+            publishStatus("A0:" + String(adcThresholds[0]) + ", A1:" + String(adcThresholds[1]) + ", A2:" + String(adcThresholds[2]) + ", A3:" + String(adcThresholds[3]) + " #Threshold", true);
+            return 3;
+        default:
+            return 0;
+    }
+    
+}
+
 //////////////////////////////////////////////////////////////////////////////
 // Sensor Calibration
 //////////////////////////////////////////////////////////////////////////////
@@ -521,7 +587,7 @@ void writeSettings() {
     // Calibration Stage. 0 = Uncalibrated. 1 = cal1 (empty), 2 = Cal2 (empty), 255 = eeprom default - uncalibrated.
     EEPROM.write(1, calibrationState); 
     EEPROM.write(2, maxSensors); 
-    writeLooRollCount();
+    //writeLooRollCount();
     EEPROM.write(4, minimumRollCount);
     EEPROM.put(10, adcEmpty);
     EEPROM.put(20, adcFull);
@@ -531,7 +597,7 @@ void writeSettings() {
 // This will change frequently so allow it to be 
 // set by itself rather than write all the settings 
 void writeLooRollCount() {
-    EEPROM.write(3, looRollCount); 
+    //EEPROM.write(3, looRollCount); 
 }
 
 void readSettings() {
@@ -542,12 +608,14 @@ void readSettings() {
     if (version == 1) {
         calibrationState = EEPROM.read(1);
         maxSensors = EEPROM.read(2);
-        looRollCount = EEPROM.read(3);
+       // looRollCount = EEPROM.read(3);
         minimumRollCount = EEPROM.read(4);
         EEPROM.get(10, adcEmpty);
         EEPROM.get(20, adcFull);
         EEPROM.get(30, adcThresholds);
-    } 
+    } else {
+        publishStatus("Using default values. Calibration required", true);
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////
