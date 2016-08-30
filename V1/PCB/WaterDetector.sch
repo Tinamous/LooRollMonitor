@@ -3399,6 +3399,10 @@ Spark Fun Electronics SKU : Comp-Buzzer</description>
 <sheet>
 <plain>
 <text x="106.68" y="144.78" size="1.27" layer="97">Batt -VE connected to GND</text>
+<text x="172.72" y="93.98" size="1.778" layer="97">Do not use. Active low signal prevents WKP 
+from functioning properly and hence unable 
+to put Photon into deep sleep mode.</text>
+<text x="147.32" y="119.38" size="1.778" layer="97">Fit resistor instead of buzzer. Buzzer does not fit in tube.</text>
 </plain>
 <instances>
 <instance part="FRAME1" gate="G$1" x="0" y="0"/>
@@ -3648,4 +3652,10 @@ Spark Fun Electronics SKU : Comp-Buzzer</description>
 </errors>
 </schematic>
 </drawing>
+<compatibility>
+<note version="6.3" minversion="6.2.2" severity="warning">
+Since Version 6.2.2 text objects can contain more than one line,
+which will not be processed correctly with this version.
+</note>
+</compatibility>
 </eagle>

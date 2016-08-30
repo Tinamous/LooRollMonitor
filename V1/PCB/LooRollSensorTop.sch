@@ -8315,6 +8315,8 @@ Standard 0603 ceramic capacitor, and 0.1" leaded capacitor.</description>
 <part name="LOGO1" library="SparkFun-Aesthetics" deviceset="OSHW-LOGO" device="M"/>
 <part name="U2" library="SparkFun-Sensors" deviceset="QRE1113" device="SMD-W"/>
 <part name="R8" library="SparkFun-Resistors" deviceset="RESISTOR" device="1206" value="5k6"/>
+<part name="R2" library="SparkFun-Resistors" deviceset="RESISTOR" device="1206" value="100k"/>
+<part name="GND7" library="SparkFun-Aesthetics" deviceset="GND" device=""/>
 </parts>
 <sheets>
 <sheet>
@@ -8373,6 +8375,8 @@ VBATTSENSE == 3v for fresh batteries</text>
 <instance part="LOGO1" gate="G$1" x="185.42" y="-27.94"/>
 <instance part="U2" gate="&gt;NAME" x="93.98" y="-58.42" rot="MR90"/>
 <instance part="R8" gate="G$1" x="109.22" y="-60.96" rot="R180"/>
+<instance part="R2" gate="G$1" x="132.08" y="-12.7" rot="R270"/>
+<instance part="GND7" gate="1" x="132.08" y="-22.86"/>
 </instances>
 <busses>
 </busses>
@@ -8438,6 +8442,11 @@ VBATTSENSE == 3v for fresh batteries</text>
 <pinref part="C1" gate="G$1" pin="2"/>
 <pinref part="GND11" gate="1" pin="GND"/>
 <wire x1="208.28" y1="66.04" x2="208.28" y2="68.58" width="0.1524" layer="91"/>
+</segment>
+<segment>
+<pinref part="R2" gate="G$1" pin="2"/>
+<pinref part="GND7" gate="1" pin="GND"/>
+<wire x1="132.08" y1="-20.32" x2="132.08" y2="-17.78" width="0.1524" layer="91"/>
 </segment>
 </net>
 <net name="N$3" class="0">
@@ -8506,6 +8515,11 @@ VBATTSENSE == 3v for fresh batteries</text>
 <wire x1="248.92" y1="10.16" x2="248.92" y2="25.4" width="0.1524" layer="91"/>
 <wire x1="248.92" y1="25.4" x2="264.16" y2="25.4" width="0.1524" layer="91"/>
 <label x="264.16" y="25.4" size="1.27" layer="95" xref="yes"/>
+</segment>
+<segment>
+<pinref part="R2" gate="G$1" pin="1"/>
+<wire x1="132.08" y1="-7.62" x2="132.08" y2="-2.54" width="0.1524" layer="91"/>
+<label x="132.08" y="-2.54" size="1.778" layer="95" xref="yes"/>
 </segment>
 </net>
 <net name="WATERSENSE" class="0">
